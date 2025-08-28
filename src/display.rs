@@ -3,7 +3,6 @@ use libc::{self, c_int};
 use std::borrow::Cow;
 use std::ffi::{CStr, CString};
 use std::fmt;
-use sys;
 
 #[derive(Clone)]
 pub struct DisplayInfo {
@@ -36,14 +35,12 @@ impl DisplayInfo {
             model_name: raw.model_name.iter().map(|&x| x as u8).collect(),
             serial_number: raw.sn.iter().map(|&x| x as u8).collect(),
             edid: raw.edid_bytes.to_vec().into(),
-            path: DisplayPath::from_raw(&raw.path, raw.usb_bus, raw.usb_device).unwrap_or_else(
-                |_| DisplayPath::Usb {
+            path: DisplayPath::from_raw(&raw.path, raw.usb_bus, raw.usb_device).unwrap_or(DisplayPath::Usb {
                     // stupid fallback, but should never happen...
                     bus_number: raw.usb_bus,
                     device_number: raw.usb_device,
                     hiddev_device_number: -1,
-                },
-            ),
+                }),
         }
     }
 
@@ -153,13 +150,13 @@ unsafe impl Sync for DisplayInfoList {}
 
 impl fmt::Debug for DisplayInfoList {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_list().entries(self.into_iter()).finish()
+        f.debug_list().entries(&*self).finish()
     }
 }
 
 impl DisplayInfoList {
     pub unsafe fn from_raw(handle: *mut sys::DDCA_Display_Info_List) -> Self {
-        DisplayInfoList { handle: handle }
+        DisplayInfoList { handle }
     }
 
     pub fn raw(&self) -> &sys::DDCA_Display_Info_List {
@@ -167,7 +164,7 @@ impl DisplayInfoList {
     }
 
     pub fn len(&self) -> usize {
-        self.raw().info().len() as usize
+        self.raw().info().len()
     }
 
     pub fn get(&self, index: usize) -> DisplayInfo {
@@ -221,7 +218,7 @@ unsafe impl Send for Display {}
 
 impl Display {
     pub unsafe fn from_raw(handle: sys::DDCA_Display_Handle) -> Self {
-        Display { handle: handle }
+        Display { handle }
     }
 
     pub fn capabilities_string(&self) -> Result<CString> {

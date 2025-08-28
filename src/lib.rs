@@ -44,17 +44,14 @@ pub fn set_verification(onoff: bool) -> bool {
 
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Default)]
 pub enum OutputLevel {
     Terse = sys::DDCA_OL_TERSE as _,
+    #[default]
     Normal = sys::DDCA_OL_NORMAL as _,
     Verbose = sys::DDCA_OL_VERBOSE as _,
 }
 
-impl Default for OutputLevel {
-    fn default() -> Self {
-        OutputLevel::Normal
-    }
-}
 
 impl OutputLevel {
     pub fn from_raw(raw: sys::DDCA_Output_Level) -> result::Result<Self, ()> {

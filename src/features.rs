@@ -3,7 +3,6 @@ use libc::c_char;
 use std::collections::HashMap;
 use std::ffi::CStr;
 use std::fmt;
-use sys;
 
 pub type FeatureCode = u8;
 
