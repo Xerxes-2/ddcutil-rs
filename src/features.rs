@@ -1,8 +1,9 @@
-use std::{mem, fmt};
-use std::ffi::CStr;
-use std::collections::HashMap;
+use crate::{Error, Result};
 use libc::c_char;
-use {sys, Error};
+use std::collections::HashMap;
+use std::ffi::CStr;
+use std::fmt;
+use sys;
 
 pub type FeatureCode = u8;
 
@@ -15,7 +16,7 @@ pub struct Value {
 }
 
 impl Value {
-    pub fn from_raw(raw: &sys::DDCA_Non_Table_Value) -> Self {
+    pub fn from_raw(raw: &sys::DDCA_Non_Table_Vcp_Value) -> Self {
         Value {
             mh: raw.mh,
             ml: raw.ml,
@@ -47,27 +48,11 @@ impl MccsVersion {
         }
     }
 
-    pub fn from_id(raw: sys::DDCA_MCCS_Version_Id) -> Result<Self, ()> {
-        match raw {
-            sys::DDCA_V10 => Ok(MccsVersion { major: 1, minor: 0 }),
-            sys::DDCA_V20 => Ok(MccsVersion { major: 2, minor: 0 }),
-            sys::DDCA_V21 => Ok(MccsVersion { major: 2, minor: 1 }),
-            sys::DDCA_V30 => Ok(MccsVersion { major: 3, minor: 0 }),
-            sys::DDCA_V22 => Ok(MccsVersion { major: 2, minor: 2 }),
-            _ => Err(()),
-        }
-    }
+    // Version IDs are not available in new bindings
+    // pub fn from_id is removed
 
-    pub fn id(&self) -> Result<sys::DDCA_MCCS_Version_Id, ()> {
-        match *self {
-            MccsVersion { major: 1, minor: 0 } => Ok(sys::DDCA_V10),
-            MccsVersion { major: 2, minor: 0 } => Ok(sys::DDCA_V20),
-            MccsVersion { major: 2, minor: 1 } => Ok(sys::DDCA_V21),
-            MccsVersion { major: 3, minor: 0 } => Ok(sys::DDCA_V30),
-            MccsVersion { major: 2, minor: 2 } => Ok(sys::DDCA_V22),
-            _ => Err(()),
-        }
-    }
+    // Version IDs are not available in new bindings
+    // pub fn id is removed
 }
 
 impl fmt::Display for MccsVersion {
@@ -92,15 +77,20 @@ impl Capabilities {
     pub unsafe fn from_raw(raw: &sys::DDCA_Capabilities) -> Self {
         Capabilities {
             version: MccsVersion::from_raw(raw.version_spec),
-            features: raw.vcp_codes().iter().map(|raw| (raw.feature_code, raw.values().to_owned())).collect(),
+            features: raw
+                .vcp_codes()
+                .iter()
+                .map(|raw| (raw.feature_code, raw.values().to_owned()))
+                .collect(),
         }
     }
 
-    pub fn from_cstr(caps: &CStr) -> ::Result<Self> {
+    pub fn from_cstr(caps: &CStr) -> Result<Self> {
         unsafe {
-            let mut res = mem::uninitialized();
+            let mut res = std::ptr::null_mut();
             Error::from_status(sys::ddca_parse_capabilities_string(
-                caps.as_ptr() as *mut _, &mut res
+                caps.as_ptr() as *mut _,
+                &mut res,
             ))?;
             let caps = Capabilities::from_raw(&*res);
             sys::ddca_free_parsed_capabilities(res);
@@ -118,34 +108,56 @@ pub struct FeatureInfo {
 }
 
 impl FeatureInfo {
-    pub fn from_code(code: FeatureCode, version: MccsVersion) -> ::Result<Self> {
+    pub fn from_code(code: FeatureCode, version: MccsVersion) -> Result<Self> {
         unsafe {
-            let mut res = mem::uninitialized();
-            Error::from_status(sys::ddca_get_feature_info_by_vcp_version(
-                code, version.id().unwrap_or(sys::DDCA_VANY), &mut res
+            let mut res = std::ptr::null_mut();
+            let vspec = sys::DDCA_MCCS_Version_Spec {
+                major: version.major,
+                minor: version.minor,
+            };
+            Error::from_status(sys::ddca_get_feature_metadata_by_vspec(
+                code, vspec, true, &mut res,
             ))?;
             let features = Self::from_raw(&*res);
-            Error::from_status(sys::ddca_free_feature_info(res))?;
+            sys::ddca_free_feature_metadata(res);
             Ok(features)
         }
     }
 
-    pub unsafe fn from_raw(raw: &sys::DDCA_Version_Feature_Info) -> Self {
+    pub unsafe fn from_raw(raw: &sys::DDCA_Feature_Metadata) -> Self {
         unsafe fn from_ptr(ptr: *const c_char) -> String {
             if ptr.is_null() {
                 Default::default()
             } else {
-                CStr::from_ptr(ptr).to_string_lossy().into_owned()
+                unsafe { CStr::from_ptr(ptr) }
+                    .to_string_lossy()
+                    .into_owned()
             }
         }
 
+        let value_names = if raw.sl_values.is_null() {
+            HashMap::new()
+        } else {
+            // We need to iterate through the array until we find a null entry
+            let mut values = HashMap::new();
+            let mut i = 0;
+            loop {
+                let entry = unsafe { raw.sl_values.offset(i) };
+                if unsafe { *entry }.value_name.is_null() {
+                    break;
+                }
+                values.insert(unsafe { *entry }.value_code, unsafe {
+                    from_ptr((*entry).value_name)
+                });
+                i += 1;
+            }
+            values
+        };
+
         FeatureInfo {
-            name: from_ptr(raw.feature_name),
-            description: from_ptr(raw.desc),
-            value_names: raw.sl_values().iter().map(|v| (
-                v.value_code,
-                from_ptr(v.value_name),
-            )).collect(),
+            name: unsafe { from_ptr(raw.feature_name) },
+            description: unsafe { from_ptr(raw.feature_desc) },
+            value_names,
             flags: FeatureFlags::from_bits_truncate(raw.feature_flags),
         }
     }
@@ -166,8 +178,12 @@ bitflags! {
         const COMPLEX_CONT = sys::DDCA_COMPLEX_CONT;
         /// Non-continuous feature, having a defined list of values in byte SL
         const SIMPLE_NC = sys::DDCA_SIMPLE_NC;
+        /// Extended non-continuous feature
+        const EXTENDED_NC = sys::DDCA_EXTENDED_NC;
         /// Non-continuous feature, having a complex interpretation using one or more of SL, SH, ML, MH
         const COMPLEX_NC = sys::DDCA_COMPLEX_NC;
+        /// Non-continuous continuous feature
+        const NC_CONT = sys::DDCA_NC_CONT;
 
         /// Used internally for write-only non-continuous features
         const WO_NC = sys::DDCA_WO_NC;
@@ -213,10 +229,5 @@ impl FeatureFlags {
     /// Table type feature, of any subtype
     pub fn is_table(&self) -> bool {
         self.bits & sys::DDCA_TABLE != 0
-    }
-
-    /// unused
-    pub fn is_known(&self) -> bool {
-        self.bits & sys::DDCA_KNOWN != 0
     }
 }

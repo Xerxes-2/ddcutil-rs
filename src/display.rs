@@ -1,8 +1,9 @@
-use std::{mem, fmt};
+use crate::{Capabilities, Error, FeatureCode, Result, Value};
+use libc::{self, c_int};
 use std::borrow::Cow;
 use std::ffi::{CStr, CString};
-use libc::{self, c_int, c_char};
-use {sys, Error, Status, FeatureCode, Capabilities, Value};
+use std::fmt;
+use sys;
 
 #[derive(Clone)]
 pub struct DisplayInfo {
@@ -15,54 +16,42 @@ pub struct DisplayInfo {
     path: DisplayPath,
 }
 
-unsafe impl Send for DisplayInfo { }
-unsafe impl Sync for DisplayInfo { }
+unsafe impl Send for DisplayInfo {}
+unsafe impl Sync for DisplayInfo {}
 
 impl DisplayInfo {
-    pub fn open(&self) -> ::Result<Display> {
+    pub fn open(&self) -> Result<Display> {
         unsafe {
-            let mut handle = mem::uninitialized();
-            let status = sys::ddca_open_display(self.handle, &mut handle as *mut _);
+            let mut handle = std::ptr::null_mut();
+            let status = sys::ddca_open_display2(self.handle, false, &mut handle as *mut _);
             Error::from_status(status).map(|_| Display::from_raw(handle))
         }
     }
 
     pub unsafe fn from_raw(raw: &sys::DDCA_Display_Info) -> Self {
-        fn from_ptr(ptr: *const c_char) -> Vec<u8> {
-            if ptr.is_null() {
-                Default::default()
-            } else {
-                unsafe {
-                    CStr::from_ptr(ptr).to_bytes().to_owned()
-                }
-            }
-        }
-
         DisplayInfo {
             handle: raw.dref,
             display_number: raw.dispno,
-            manufacturer_id: from_ptr(raw.mfg_id),
-            model_name: from_ptr(raw.model_name),
-            serial_number: from_ptr(raw.sn),
-            edid: raw.edid_bytes().to_owned().into(),
-            path: DisplayPath::from_raw(&raw.path, raw.usb_bus, raw.usb_device)
-                .unwrap_or_else(|_| DisplayPath::Usb {
+            manufacturer_id: raw.mfg_id.iter().map(|&x| x as u8).collect(),
+            model_name: raw.model_name.iter().map(|&x| x as u8).collect(),
+            serial_number: raw.sn.iter().map(|&x| x as u8).collect(),
+            edid: raw.edid_bytes.to_vec().into(),
+            path: DisplayPath::from_raw(&raw.path, raw.usb_bus, raw.usb_device).unwrap_or_else(
+                |_| DisplayPath::Usb {
                     // stupid fallback, but should never happen...
                     bus_number: raw.usb_bus,
                     device_number: raw.usb_device,
                     hiddev_device_number: -1,
-                }),
+                },
+            ),
         }
     }
 
-    pub fn enumerate() -> ::Result<DisplayInfoList> {
+    pub fn enumerate() -> Result<DisplayInfoList> {
         unsafe {
-            let res = sys::ddca_get_display_info_list();
-            if res.is_null() {
-                Err(Error::new(Status::new(libc::EINVAL)))
-            } else {
-                Ok(DisplayInfoList::from_raw(res))
-            }
+            let mut res = std::ptr::null_mut();
+            let status = sys::ddca_get_display_info_list2(false, &mut res);
+            Error::from_status(status).map(|_| DisplayInfoList::from_raw(res))
         }
     }
 
@@ -74,7 +63,7 @@ impl DisplayInfo {
         self.display_number
     }
 
-    pub fn manufacturer_id(&self) -> Cow<str> {
+    pub fn manufacturer_id(&self) -> Cow<'_, str> {
         String::from_utf8_lossy(&self.manufacturer_id)
     }
 
@@ -82,7 +71,7 @@ impl DisplayInfo {
         &self.manufacturer_id
     }
 
-    pub fn model_name(&self) -> Cow<str> {
+    pub fn model_name(&self) -> Cow<'_, str> {
         String::from_utf8_lossy(&self.model_name)
     }
 
@@ -90,7 +79,7 @@ impl DisplayInfo {
         &self.model_name
     }
 
-    pub fn serial_number(&self) -> Cow<str> {
+    pub fn serial_number(&self) -> Cow<'_, str> {
         String::from_utf8_lossy(&self.serial_number)
     }
 
@@ -136,19 +125,19 @@ pub enum DisplayPath {
 }
 
 impl DisplayPath {
-    pub fn from_raw(path: &sys::DDCA_IO_Path, usb_bus: c_int, usb_device: c_int) -> Result<Self, ()> {
+    pub fn from_raw(
+        path: &sys::DDCA_IO_Path,
+        usb_bus: c_int,
+        usb_device: c_int,
+    ) -> core::result::Result<Self, ()> {
         match path.io_mode {
-            sys::DDCA_IO_DEVI2C => Ok(DisplayPath::I2c {
-                bus_number: path.i2c_busno(),
+            sys::DDCA_IO_I2C => Ok(DisplayPath::I2c {
+                bus_number: unsafe { path.path.i2c_busno },
             }),
             sys::DDCA_IO_USB => Ok(DisplayPath::Usb {
                 bus_number: usb_bus as _,
                 device_number: usb_device as _,
-                hiddev_device_number: path.hiddev_devno(),
-            }),
-            sys::DDCA_IO_ADL => Ok(DisplayPath::Adl {
-                adapter_index: path.adlno().iAdapterIndex,
-                display_index: path.adlno().iDisplayIndex,
+                hiddev_device_number: unsafe { path.path.hiddev_devno },
             }),
             _ => Err(()),
         }
@@ -159,8 +148,8 @@ pub struct DisplayInfoList {
     handle: *mut sys::DDCA_Display_Info_List,
 }
 
-unsafe impl Send for DisplayInfoList { }
-unsafe impl Sync for DisplayInfoList { }
+unsafe impl Send for DisplayInfoList {}
+unsafe impl Sync for DisplayInfoList {}
 
 impl fmt::Debug for DisplayInfoList {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -170,9 +159,7 @@ impl fmt::Debug for DisplayInfoList {
 
 impl DisplayInfoList {
     pub unsafe fn from_raw(handle: *mut sys::DDCA_Display_Info_List) -> Self {
-        DisplayInfoList {
-            handle: handle,
-        }
+        DisplayInfoList { handle: handle }
     }
 
     pub fn raw(&self) -> &sys::DDCA_Display_Info_List {
@@ -184,9 +171,7 @@ impl DisplayInfoList {
     }
 
     pub fn get(&self, index: usize) -> DisplayInfo {
-        unsafe {
-            DisplayInfo::from_raw(&self.raw().info()[index])
-        }
+        unsafe { DisplayInfo::from_raw(&self.raw().info()[index]) }
     }
 }
 
@@ -204,9 +189,7 @@ impl<'a> IntoIterator for &'a DisplayInfoList {
 
 impl Drop for DisplayInfoList {
     fn drop(&mut self) {
-        unsafe {
-            sys::ddca_free_display_info_list(self.handle)
-        }
+        unsafe { sys::ddca_free_display_info_list(self.handle) }
     }
 }
 
@@ -234,86 +217,87 @@ impl<'a> Iterator for DisplayInfoIter<'a> {
 pub struct Display {
     handle: sys::DDCA_Display_Handle,
 }
-unsafe impl Send for Display { }
+unsafe impl Send for Display {}
 
 impl Display {
     pub unsafe fn from_raw(handle: sys::DDCA_Display_Handle) -> Self {
-        Display {
-            handle: handle,
-        }
+        Display { handle: handle }
     }
 
-    pub fn capabilities_string(&self) -> ::Result<CString> {
+    pub fn capabilities_string(&self) -> Result<CString> {
         unsafe {
-            let mut res = mem::uninitialized();
-            Error::from_status(sys::ddca_get_capabilities_string(
-                self.handle, &mut res
-            ))?;
+            let mut res = std::ptr::null_mut();
+            Error::from_status(sys::ddca_get_capabilities_string(self.handle, &mut res))?;
             let string = CStr::from_ptr(res).to_owned();
             libc::free(res as *mut _);
             Ok(string)
         }
     }
 
-    pub fn capabilities(&self) -> ::Result<Capabilities> {
-        self.capabilities_string().and_then(|c| Capabilities::from_cstr(&c))
+    pub fn capabilities(&self) -> Result<Capabilities> {
+        self.capabilities_string()
+            .and_then(|c| Capabilities::from_cstr(&c))
     }
 
-    pub fn vcp_set_simple(&self, code: FeatureCode, value: u8) -> ::Result<()> {
+    pub fn vcp_set_simple(&self, code: FeatureCode, value: u8) -> Result<()> {
         unsafe {
-            Error::from_status(sys::ddca_set_simple_nc_vcp_value(
-                self.handle, code as _, value
-            )).map(drop)
+            Error::from_status(sys::ddca_set_non_table_vcp_value(
+                self.handle,
+                code as _,
+                0,
+                value,
+            ))
+            .map(drop)
         }
     }
 
-    pub fn vcp_set_raw(&self, code: FeatureCode, value: u16) -> ::Result<()> {
+    pub fn vcp_set_raw(&self, code: FeatureCode, value: u16) -> Result<()> {
         unsafe {
-            Error::from_status(sys::ddca_set_raw_vcp_value(
-                self.handle, code as _, (value >> 8) as u8, value as u8
-            )).map(drop)
+            Error::from_status(sys::ddca_set_non_table_vcp_value(
+                self.handle,
+                code as _,
+                (value >> 8) as u8,
+                value as u8,
+            ))
+            .map(drop)
         }
     }
 
-    pub fn vcp_set_continuous(&self, code: FeatureCode, value: i32) -> ::Result<()> {
+    pub fn vcp_set_continuous(&self, code: FeatureCode, value: i32) -> Result<()> {
         unsafe {
-            Error::from_status(sys::ddca_set_continuous_vcp_value(
-                self.handle, code as _, value
-            )).map(drop)
+            Error::from_status(sys::ddca_set_non_table_vcp_value(
+                self.handle,
+                code as _,
+                (value >> 8) as u8,
+                value as u8,
+            ))
+            .map(drop)
         }
     }
 
-    pub fn vcp_get_value(&self, code: FeatureCode) -> ::Result<Value> {
+    pub fn vcp_get_value(&self, code: FeatureCode) -> Result<Value> {
         unsafe {
-            let mut raw = mem::uninitialized();
-            Error::from_status(sys::ddca_get_any_vcp_value(
-                self.handle, code as _, sys::DDCA_NON_TABLE_VCP_VALUE_PARM, &mut raw
+            let mut raw = std::mem::MaybeUninit::<sys::DDCA_Non_Table_Vcp_Value>::uninit();
+            Error::from_status(sys::ddca_get_non_table_vcp_value(
+                self.handle,
+                code as _,
+                raw.as_mut_ptr(),
             ))?;
-            let raw = &mut *raw;
-            if raw.value_type != sys::DDCA_NON_TABLE_VCP_VALUE || raw.opcode != code {
-                libc::free(raw as *mut _ as *mut _);
-                return Err(Error::new(Status::new(libc::EINVAL)))
-            }
-            let value = Value::from_raw(raw.c_nc());
-            libc::free(raw as *mut _ as *mut _);
-            Ok(value)
+            let raw = raw.assume_init();
+            Ok(Value::from_raw(&raw))
         }
     }
 
-    pub fn vcp_get_table(&self, code: FeatureCode) -> ::Result<Vec<u8>> {
+    pub fn vcp_get_table(&self, code: FeatureCode) -> Result<Vec<u8>> {
         unsafe {
-            let mut raw = mem::uninitialized();
-            Error::from_status(sys::ddca_get_any_vcp_value(
-                self.handle, code as _, sys::DDCA_TABLE_VCP_VALUE_PARM, &mut raw
+            let mut raw = std::ptr::null_mut();
+            Error::from_status(sys::ddca_get_table_vcp_value(
+                self.handle,
+                code as _,
+                &mut raw,
             ))?;
-            let raw = &mut *raw;
-            if raw.value_type != sys::DDCA_TABLE_VCP_VALUE || raw.opcode != code {
-                libc::free(raw as *mut _ as *mut _);
-                return Err(Error::new(Status::new(libc::EINVAL)))
-            }
-            let value = raw.t().bytes().to_owned();
-            libc::free(raw.t().bytes as *mut _);
-            libc::free(raw as *mut _ as *mut _);
+            let value = (*raw).bytes().to_owned();
+            sys::ddca_free_table_vcp_value(raw);
             Ok(value)
         }
     }

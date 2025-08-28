@@ -2,6 +2,7 @@
 name = "ddcutil-sys"
 version = "0.0.3"
 authors = ["arcnmx"]
+edition = "2024"
 
 description = "libddcutil FFI bindings"
 keywords = ["ddcci", "ddc", "ci", "ddcutil", "vcp"]

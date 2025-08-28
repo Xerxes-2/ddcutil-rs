@@ -1,5 +1,6 @@
-use std::{fmt, error, str};
-use {sys, c_str};
+use crate::c_str;
+use std::{error, fmt, str};
+use sys;
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Status {
@@ -8,13 +9,11 @@ pub struct Status {
 
 impl Status {
     pub fn new(status: sys::DDCA_Status) -> Self {
-        Status {
-            status: status,
-        }
+        Status { status: status }
     }
 
     pub fn success(&self) -> bool {
-        self.status >= 0
+        self.status >= 0 || self.status == sys::DDCRC_REPORTED_UNSUPPORTED
     }
 
     pub fn status(&self) -> sys::DDCA_Status {
@@ -71,9 +70,7 @@ pub struct Error {
 
 impl Error {
     pub fn new(status: Status) -> Self {
-        Error {
-            status: status,
-        }
+        Error { status: status }
     }
 
     pub fn from_status(status: sys::DDCA_Status) -> Result<Status, Self> {
